@@ -1,7 +1,8 @@
 version: 2
 updates:
-  # Enable version updates for Python dependencies
-  - package-ecosystem: "pip"
+  # Enable version updates for Python dependencies (uv manages uv.lock;
+  # the "pip" ecosystem does not and produced zero Python dependency PRs)
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"

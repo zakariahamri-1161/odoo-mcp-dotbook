@@ -1,8 +1,11 @@
 name: CI
 
+# push runs only on long-lived branches; the pull_request trigger covers
+# feature branches ('*' did not match slash-named branches and double-ran
+# flat-named branches with open PRs)
 on:
   push:
-    branches: ['*']
+    branches: [main, dev]
   pull_request:
     branches: ['*']
 
