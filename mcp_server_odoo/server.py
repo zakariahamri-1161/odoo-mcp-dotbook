@@ -289,6 +289,7 @@ class OdooMCPServer:
             self._warn_if_exposed(host)
             self.app.settings.host = host
             self.app.settings.port = port
+            self._preseed_session_manager()
             await self.app.run_streamable_http_async()
         except KeyboardInterrupt:
             logger.info("Server interrupted by user")
@@ -297,6 +298,35 @@ class OdooMCPServer:
         except Exception as e:
             context = ErrorContext(operation="server_run_http")
             error_handler.handle_error(e, context=context)
+
+    def _preseed_session_manager(self) -> None:
+        """Apply ODOO_MCP_SESSION_IDLE_TIMEOUT to the streamable-http transport.
+
+        The SDK's StreamableHTTPSessionManager supports evicting idle sessions
+        (freeing their transport state, which otherwise accumulates until
+        process restart), but FastMCP does not yet expose the parameter. Its session manager is created lazily in
+        streamable_http_app(), so constructing it here first — mirroring the
+        arguments FastMCP would pass, plus the timeout — makes FastMCP reuse
+        this instance. Remove once FastMCP plumbs session_idle_timeout through.
+        """
+        if self.config.session_idle_timeout is None:
+            return
+
+        from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+
+        self.app._session_manager = StreamableHTTPSessionManager(
+            app=self.app._mcp_server,
+            event_store=self.app._event_store,
+            retry_interval=self.app._retry_interval,
+            json_response=self.app.settings.json_response,
+            stateless=self.app.settings.stateless_http,
+            security_settings=self.app.settings.transport_security,
+            session_idle_timeout=self.config.session_idle_timeout,
+        )
+        logger.info(
+            "Streamable-http session idle timeout enabled: %.0fs",
+            self.config.session_idle_timeout,
+        )
 
     def _build_transport_security(self) -> Optional[TransportSecuritySettings]:
         """Build DNS-rebinding-protection settings from ODOO_MCP_ALLOWED_HOSTS.

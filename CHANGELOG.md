@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`ODOO_MCP_ALLOWED_HOSTS`**: comma-separated `Host` headers to accept for the `streamable-http` transport (DNS-rebinding protection). Needed when running behind a reverse proxy that forwards an external host; unset preserves the prior default (no host validation) (#45, @Miriup).
+- **`ODOO_MCP_SESSION_IDLE_TIMEOUT`**: seconds of inactivity before a `streamable-http` session is closed and its server-side state freed; unset preserves the prior behavior (sessions never expire).
 
 ### Changed
 - **Dependencies**: refreshed the lockfile — `mcp` 1.26.0 → 1.27.2 (streamable-http idle timeout, mid-request transport-close handling, pydantic 2.13 compat), `pydantic` 2.11 → 2.13, `starlette` 0.47 → 1.3, plus dev tooling (ruff, ty, pytest 9). Full suite green against the new stack.

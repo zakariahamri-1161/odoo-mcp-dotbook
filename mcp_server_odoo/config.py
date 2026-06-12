@@ -40,6 +40,11 @@ class OdooConfig:
     host: str = "localhost"
     port: int = 8000
 
+    # Idle seconds before a streamable-http session is evicted (None = never).
+    # Without it, abandoned sessions pin their transport state (streams,
+    # task, server instance) in the session manager until process restart.
+    session_idle_timeout: Optional[float] = None
+
     # YOLO mode configuration
     yolo_mode: str = "off"  # "off", "read", or "true"
 
@@ -111,6 +116,10 @@ class OdooConfig:
         # Validate port
         if self.port <= 0 or self.port > 65535:
             raise ValueError("Port must be between 1 and 65535")
+
+        # Validate session idle timeout
+        if self.session_idle_timeout is not None and self.session_idle_timeout <= 0:
+            raise ValueError("ODOO_MCP_SESSION_IDLE_TIMEOUT must be positive")
 
         # Without this warning, the silent non-registration is hard to debug.
         if self.enable_method_calls and self.yolo_mode != "true":
@@ -221,6 +230,15 @@ def load_config(env_file: Optional[Path] = None) -> OdooConfig:
         except ValueError:
             raise ValueError(f"{key} must be a valid integer") from None
 
+    def get_optional_float_env(key: str) -> Optional[float]:
+        value = os.getenv(key)
+        if value is None or not value.strip():
+            return None
+        try:
+            return float(value)
+        except ValueError:
+            raise ValueError(f"{key} must be a valid number") from None
+
     def get_bool_env(key: str, default: bool = False) -> bool:
         raw = os.getenv(key)
         if raw is None:
@@ -262,6 +280,7 @@ def load_config(env_file: Optional[Path] = None) -> OdooConfig:
         transport=os.getenv("ODOO_MCP_TRANSPORT", "stdio").strip(),
         host=os.getenv("ODOO_MCP_HOST", "localhost").strip(),
         port=get_int_env("ODOO_MCP_PORT", 8000),
+        session_idle_timeout=get_optional_float_env("ODOO_MCP_SESSION_IDLE_TIMEOUT"),
         locale=os.getenv("ODOO_LOCALE", "").strip() or None,
         yolo_mode=get_yolo_mode(),
         enable_method_calls=get_bool_env("ODOO_MCP_ENABLE_METHOD_CALLS", False),

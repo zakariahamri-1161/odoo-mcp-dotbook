@@ -983,3 +983,51 @@ class TestTransportSecurity:
             "http://localhost:*",
             "https://localhost:*",
         ]
+
+
+class TestSessionIdleTimeoutPreseed:
+    """Test the session-manager pre-seed that applies the idle timeout."""
+
+    def test_no_preseed_without_timeout(self):
+        """Without the setting, the session manager is left for FastMCP to create."""
+        server = OdooMCPServer(OdooConfig(url="http://localhost:8069", api_key="k"))
+
+        server._preseed_session_manager()
+
+        assert server.app._session_manager is None
+
+    def test_preseed_applies_timeout_and_security(self):
+        """The pre-seeded manager carries the timeout and mirrors FastMCP's settings."""
+        from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+
+        server = OdooMCPServer(
+            OdooConfig(
+                url="http://localhost:8069",
+                api_key="k",
+                allowed_hosts=["localhost"],
+                session_idle_timeout=600,
+            )
+        )
+
+        server._preseed_session_manager()
+
+        manager = server.app._session_manager
+        assert isinstance(manager, StreamableHTTPSessionManager)
+        assert manager.session_idle_timeout == 600
+        assert manager.security_settings is server.app.settings.transport_security
+        assert manager.stateless is server.app.settings.stateless_http
+
+    def test_fastmcp_reuses_preseeded_manager(self):
+        """streamable_http_app() must use the pre-seeded manager, not build its own.
+
+        This is the load-bearing assumption of the workaround; if a FastMCP
+        upgrade changes the lazy initialization, this test fails loudly."""
+        server = OdooMCPServer(
+            OdooConfig(url="http://localhost:8069", api_key="k", session_idle_timeout=30)
+        )
+
+        server._preseed_session_manager()
+        preseeded = server.app._session_manager
+        server.app.streamable_http_app()
+
+        assert server.app._session_manager is preseeded

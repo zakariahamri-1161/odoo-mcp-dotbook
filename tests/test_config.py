@@ -549,3 +549,66 @@ class TestAllowedHosts:
         config = load_config()
 
         assert config.allowed_hosts == ["localhost:8000", "example.com:443"]
+
+
+class TestSessionIdleTimeout:
+    """Test session idle timeout configuration for HTTP transport."""
+
+    def test_default_is_none(self):
+        """Test session_idle_timeout defaults to None (never expire)."""
+        config = OdooConfig(url="http://localhost:8069", api_key="test")
+        assert config.session_idle_timeout is None
+
+    def test_set_directly(self):
+        """Test session_idle_timeout can be set directly."""
+        config = OdooConfig(url="http://localhost:8069", api_key="test", session_idle_timeout=600)
+        assert config.session_idle_timeout == 600
+
+    def test_from_env(self, monkeypatch):
+        """Test loading session idle timeout from environment."""
+        monkeypatch.setenv("ODOO_URL", "http://localhost:8069")
+        monkeypatch.setenv("ODOO_API_KEY", "test-key")
+        monkeypatch.setenv("ODOO_MCP_SESSION_IDLE_TIMEOUT", "600")
+
+        config = load_config()
+
+        assert config.session_idle_timeout == 600.0
+
+    def test_from_env_fractional(self, monkeypatch):
+        """Test fractional seconds are accepted."""
+        monkeypatch.setenv("ODOO_URL", "http://localhost:8069")
+        monkeypatch.setenv("ODOO_API_KEY", "test-key")
+        monkeypatch.setenv("ODOO_MCP_SESSION_IDLE_TIMEOUT", "2.5")
+
+        config = load_config()
+
+        assert config.session_idle_timeout == 2.5
+
+    def test_empty_env_means_none(self, monkeypatch):
+        """Test an empty value leaves the timeout disabled."""
+        monkeypatch.setenv("ODOO_URL", "http://localhost:8069")
+        monkeypatch.setenv("ODOO_API_KEY", "test-key")
+        monkeypatch.setenv("ODOO_MCP_SESSION_IDLE_TIMEOUT", "")
+
+        config = load_config()
+
+        assert config.session_idle_timeout is None
+
+    def test_invalid_value_raises(self, monkeypatch):
+        """Test a non-numeric value raises a clear error."""
+        monkeypatch.setenv("ODOO_URL", "http://localhost:8069")
+        monkeypatch.setenv("ODOO_API_KEY", "test-key")
+        monkeypatch.setenv("ODOO_MCP_SESSION_IDLE_TIMEOUT", "soon")
+
+        with pytest.raises(ValueError, match="ODOO_MCP_SESSION_IDLE_TIMEOUT"):
+            load_config()
+
+    def test_zero_raises(self):
+        """Test zero is rejected (SDK requires a positive timeout)."""
+        with pytest.raises(ValueError, match="must be positive"):
+            OdooConfig(url="http://localhost:8069", api_key="test", session_idle_timeout=0)
+
+    def test_negative_raises(self):
+        """Test negative values are rejected."""
+        with pytest.raises(ValueError, match="must be positive"):
+            OdooConfig(url="http://localhost:8069", api_key="test", session_idle_timeout=-5)

@@ -328,6 +328,7 @@ The server requires the following environment variables:
 | `ODOO_MCP_HOST` | `localhost` | Host to bind for HTTP transport |
 | `ODOO_MCP_PORT` | `8000` | Port to bind for HTTP transport |
 | `ODOO_MCP_ALLOWED_HOSTS` | — | Comma-separated `Host` headers to accept for HTTP transport (DNS-rebinding protection). Set when running `streamable-http` behind a reverse proxy that forwards an external host, e.g. `odoo.example.com,localhost`. Unset leaves the default (no host validation). |
+| `ODOO_MCP_SESSION_IDLE_TIMEOUT` | — | Seconds of inactivity before a `streamable-http` session is closed and its server-side state freed, e.g. `600`. Unset means sessions never expire. |
 
 ### Transport Options
 
