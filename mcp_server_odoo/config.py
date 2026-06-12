@@ -6,7 +6,7 @@ for connecting to Odoo via XML-RPC.
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Literal, Optional
 
@@ -40,11 +40,19 @@ class OdooConfig:
     host: str = "localhost"
     port: int = 8000
 
+    # Idle seconds before a streamable-http session is evicted (None = never).
+    # Without it, abandoned sessions pin their transport state (streams,
+    # task, server instance) in the session manager until process restart.
+    session_idle_timeout: Optional[float] = None
+
     # YOLO mode configuration
     yolo_mode: str = "off"  # "off", "read", or "true"
 
     # Opt-in for call_model_method (effective only with yolo_mode == "true").
     enable_method_calls: bool = False
+
+    # Allowed hosts for DNS rebinding protection (HTTP transport)
+    allowed_hosts: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -108,6 +116,10 @@ class OdooConfig:
         # Validate port
         if self.port <= 0 or self.port > 65535:
             raise ValueError("Port must be between 1 and 65535")
+
+        # Validate session idle timeout
+        if self.session_idle_timeout is not None and self.session_idle_timeout <= 0:
+            raise ValueError("ODOO_MCP_SESSION_IDLE_TIMEOUT must be positive")
 
         # Without this warning, the silent non-registration is hard to debug.
         if self.enable_method_calls and self.yolo_mode != "true":
@@ -218,6 +230,15 @@ def load_config(env_file: Optional[Path] = None) -> OdooConfig:
         except ValueError:
             raise ValueError(f"{key} must be a valid integer") from None
 
+    def get_optional_float_env(key: str) -> Optional[float]:
+        value = os.getenv(key)
+        if value is None or not value.strip():
+            return None
+        try:
+            return float(value)
+        except ValueError:
+            raise ValueError(f"{key} must be a valid number") from None
+
     def get_bool_env(key: str, default: bool = False) -> bool:
         raw = os.getenv(key)
         if raw is None:
@@ -238,6 +259,13 @@ def load_config(env_file: Optional[Path] = None) -> OdooConfig:
             # Invalid value - will be caught by validation
             return yolo_env
 
+    # Helper function to parse allowed hosts
+    def parse_allowed_hosts() -> list[str]:
+        hosts = os.getenv("ODOO_MCP_ALLOWED_HOSTS", "").strip()
+        if not hosts:
+            return []
+        return [h.strip() for h in hosts.split(",") if h.strip()]
+
     # Create configuration
     config = OdooConfig(
         url=os.getenv("ODOO_URL", "").strip(),
@@ -252,9 +280,11 @@ def load_config(env_file: Optional[Path] = None) -> OdooConfig:
         transport=os.getenv("ODOO_MCP_TRANSPORT", "stdio").strip(),
         host=os.getenv("ODOO_MCP_HOST", "localhost").strip(),
         port=get_int_env("ODOO_MCP_PORT", 8000),
+        session_idle_timeout=get_optional_float_env("ODOO_MCP_SESSION_IDLE_TIMEOUT"),
         locale=os.getenv("ODOO_LOCALE", "").strip() or None,
         yolo_mode=get_yolo_mode(),
         enable_method_calls=get_bool_env("ODOO_MCP_ENABLE_METHOD_CALLS", False),
+        allowed_hosts=parse_allowed_hosts(),
     )
 
     return config

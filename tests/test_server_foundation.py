@@ -836,3 +836,198 @@ class TestConnectionPersistsAcrossHttpSessions:
         )
         assert reg_res.call_count == 1, "resources must register after recovery"
         assert reg_tools.call_count == 1, "tools must register after recovery"
+
+
+class TestTransportSecurity:
+    """Test transport security configuration for DNS rebinding protection."""
+
+    def test_no_transport_security_by_default(self):
+        """Test that no transport security is configured when allowed_hosts is empty."""
+        config = OdooConfig(
+            url="http://localhost:8069",
+            api_key="test_api_key",
+            allowed_hosts=[],
+        )
+        server = OdooMCPServer(config)
+
+        # FastMCP should not have transport_security set
+        # We check via the settings or internal state
+        assert server.app.settings.host == "localhost"
+
+    def test_transport_security_with_single_host(self):
+        """Test transport security is configured with a single allowed host."""
+        config = OdooConfig(
+            url="http://localhost:8069",
+            api_key="test_api_key",
+            allowed_hosts=["localhost"],
+        )
+        server = OdooMCPServer(config)
+
+        # Server should be created successfully with transport security
+        assert server.app is not None
+        assert server.config.allowed_hosts == ["localhost"]
+
+    def test_transport_security_with_multiple_hosts(self):
+        """Test transport security with multiple allowed hosts."""
+        config = OdooConfig(
+            url="http://localhost:8069",
+            api_key="test_api_key",
+            allowed_hosts=["localhost", "example.com", "odoo.local"],
+        )
+        server = OdooMCPServer(config)
+
+        assert server.app is not None
+        assert len(server.config.allowed_hosts) == 3
+
+    def test_transport_security_host_with_port_preserved(self):
+        """Test that hosts with ports are preserved as-is."""
+        config = OdooConfig(
+            url="http://localhost:8069",
+            api_key="test_api_key",
+            allowed_hosts=["localhost:8000", "example.com"],
+        )
+        server = OdooMCPServer(config)
+
+        # The server should handle both formats
+        assert "localhost:8000" in server.config.allowed_hosts
+        assert "example.com" in server.config.allowed_hosts
+
+    def test_transport_security_builds_allowed_origins(self):
+        """Test that allowed_origins are built from allowed_hosts."""
+        from mcp.server.transport_security import TransportSecuritySettings
+
+        config = OdooConfig(
+            url="http://localhost:8069",
+            api_key="test_api_key",
+            allowed_hosts=["example.com"],
+        )
+
+        # Capture the TransportSecuritySettings that would be created
+        with patch.object(TransportSecuritySettings, "__init__", return_value=None) as mock_init:
+            # Create server - this will call TransportSecuritySettings
+            OdooMCPServer(config)
+
+            # Verify TransportSecuritySettings was called with correct params
+            mock_init.assert_called_once()
+            call_kwargs = mock_init.call_args[1]
+
+            assert call_kwargs["enable_dns_rebinding_protection"] is True
+            assert "example.com:*" in call_kwargs["allowed_hosts"]
+            assert "http://example.com:*" in call_kwargs["allowed_origins"]
+            assert "https://example.com:*" in call_kwargs["allowed_origins"]
+
+    def test_transport_security_host_with_port_extracts_base(self):
+        """Test that base hostname is extracted from host:port for origins."""
+        from mcp.server.transport_security import TransportSecuritySettings
+
+        config = OdooConfig(
+            url="http://localhost:8069",
+            api_key="test_api_key",
+            allowed_hosts=["example.com:8080"],
+        )
+
+        with patch.object(TransportSecuritySettings, "__init__", return_value=None) as mock_init:
+            OdooMCPServer(config)
+
+            call_kwargs = mock_init.call_args[1]
+
+            # Host with port should be preserved as-is (already has port)
+            assert "example.com:8080" in call_kwargs["allowed_hosts"]
+            # Origins should use base hostname with wildcard port
+            assert "http://example.com:*" in call_kwargs["allowed_origins"]
+            assert "https://example.com:*" in call_kwargs["allowed_origins"]
+
+    def test_transport_security_not_configured_when_empty(self):
+        """Test we pass None as transport_security when allowed_hosts is empty."""
+        config = OdooConfig(
+            url="http://localhost:8069",
+            api_key="test_api_key",
+            allowed_hosts=[],
+        )
+
+        with patch("mcp_server_odoo.server.FastMCP") as mock_fastmcp:
+            mock_fastmcp.return_value = Mock()
+            OdooMCPServer(config)
+
+            # Verify FastMCP was called with transport_security=None
+            call_kwargs = mock_fastmcp.call_args[1]
+            assert call_kwargs.get("transport_security") is None
+
+    def test_build_transport_security_returns_none_without_hosts(self):
+        """Empty allowed_hosts → None, leaving the SDK default (protection off)."""
+        server = OdooMCPServer(
+            OdooConfig(url="http://localhost:8069", api_key="k", allowed_hosts=[])
+        )
+        assert server._build_transport_security() is None
+
+    def test_build_transport_security_settings_shape(self):
+        """Configured hosts produce wildcard-port hosts and http/https origins;
+        a host that already carries a port keeps it verbatim."""
+        server = OdooMCPServer(
+            OdooConfig(
+                url="http://localhost:8069",
+                api_key="k",
+                allowed_hosts=["odoo.example.com", "localhost:9000"],
+            )
+        )
+        settings = server._build_transport_security()
+
+        assert settings is not None
+        assert settings.enable_dns_rebinding_protection is True
+        # bare host gets :*, host:port is preserved as-is
+        assert settings.allowed_hosts == ["odoo.example.com:*", "localhost:9000"]
+        # origins use the base hostname (port stripped) on both schemes
+        assert settings.allowed_origins == [
+            "http://odoo.example.com:*",
+            "https://odoo.example.com:*",
+            "http://localhost:*",
+            "https://localhost:*",
+        ]
+
+
+class TestSessionIdleTimeoutPreseed:
+    """Test the session-manager pre-seed that applies the idle timeout."""
+
+    def test_no_preseed_without_timeout(self):
+        """Without the setting, the session manager is left for FastMCP to create."""
+        server = OdooMCPServer(OdooConfig(url="http://localhost:8069", api_key="k"))
+
+        server._preseed_session_manager()
+
+        assert server.app._session_manager is None
+
+    def test_preseed_applies_timeout_and_security(self):
+        """The pre-seeded manager carries the timeout and mirrors FastMCP's settings."""
+        from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+
+        server = OdooMCPServer(
+            OdooConfig(
+                url="http://localhost:8069",
+                api_key="k",
+                allowed_hosts=["localhost"],
+                session_idle_timeout=600,
+            )
+        )
+
+        server._preseed_session_manager()
+
+        manager = server.app._session_manager
+        assert isinstance(manager, StreamableHTTPSessionManager)
+        assert manager.session_idle_timeout == 600
+        assert manager.security_settings is server.app.settings.transport_security
+        assert manager.stateless is server.app.settings.stateless_http
+
+    def test_fastmcp_reuses_preseeded_manager(self):
+        """streamable_http_app() must use the pre-seeded manager, not build its own.
+
+        This is the load-bearing assumption of the workaround; if a FastMCP
+        upgrade changes the lazy initialization, this test fails loudly."""
+        server = OdooMCPServer(
+            OdooConfig(url="http://localhost:8069", api_key="k", session_idle_timeout=30)
+        )
+
+        server._preseed_session_manager()
+        preseeded = server.app._session_manager
+        server.app.streamable_http_app()
+
+        assert server.app._session_manager is preseeded

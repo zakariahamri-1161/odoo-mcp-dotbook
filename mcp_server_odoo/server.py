@@ -9,6 +9,7 @@ import contextlib
 from typing import Any, Dict, Optional
 
 from mcp.server import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from . import __version__
 from .access_control import AccessController
@@ -63,11 +64,19 @@ class OdooMCPServer:
         # entries (streamable-http enters the lifespan per session)
         self._connect_lock = asyncio.Lock()
 
+        # Configure transport security for DNS rebinding protection. Left as
+        # None (no allowed_hosts configured) the SDK middleware defaults to
+        # protection DISABLED — preserving prior behavior for stdio and for
+        # HTTP deployments that don't set ODOO_MCP_ALLOWED_HOSTS.
+        transport_security = self._build_transport_security()
+
         # Create FastMCP instance with server metadata
         self.app = FastMCP(
             name="odoo-mcp-server",
             instructions="MCP server for accessing and managing Odoo ERP data through the Model Context Protocol",
             lifespan=self._odoo_lifespan,
+            host=self.config.host,
+            transport_security=transport_security,
         )
 
         @self.app.custom_route("/health", methods=["GET"])
@@ -280,6 +289,7 @@ class OdooMCPServer:
             self._warn_if_exposed(host)
             self.app.settings.host = host
             self.app.settings.port = port
+            self._preseed_session_manager()
             await self.app.run_streamable_http_async()
         except KeyboardInterrupt:
             logger.info("Server interrupted by user")
@@ -288,6 +298,60 @@ class OdooMCPServer:
         except Exception as e:
             context = ErrorContext(operation="server_run_http")
             error_handler.handle_error(e, context=context)
+
+    def _preseed_session_manager(self) -> None:
+        """Apply ODOO_MCP_SESSION_IDLE_TIMEOUT to the streamable-http transport.
+
+        The SDK's StreamableHTTPSessionManager supports evicting idle sessions
+        (freeing their transport state, which otherwise accumulates until
+        process restart), but FastMCP does not yet expose the parameter. Its session manager is created lazily in
+        streamable_http_app(), so constructing it here first — mirroring the
+        arguments FastMCP would pass, plus the timeout — makes FastMCP reuse
+        this instance. Remove once FastMCP plumbs session_idle_timeout through.
+        """
+        if self.config.session_idle_timeout is None:
+            return
+
+        from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+
+        self.app._session_manager = StreamableHTTPSessionManager(
+            app=self.app._mcp_server,
+            event_store=self.app._event_store,
+            retry_interval=self.app._retry_interval,
+            json_response=self.app.settings.json_response,
+            stateless=self.app.settings.stateless_http,
+            security_settings=self.app.settings.transport_security,
+            session_idle_timeout=self.config.session_idle_timeout,
+        )
+        logger.info(
+            "Streamable-http session idle timeout enabled: %.0fs",
+            self.config.session_idle_timeout,
+        )
+
+    def _build_transport_security(self) -> Optional[TransportSecuritySettings]:
+        """Build DNS-rebinding-protection settings from ODOO_MCP_ALLOWED_HOSTS.
+
+        Returns None when no hosts are configured, which leaves the SDK
+        middleware at its default (protection disabled) — unchanged behavior
+        for stdio and for HTTP deployments behind a proxy that don't set the
+        variable. When hosts are configured, each is allowed on any port and
+        matching http/https origins are derived.
+        """
+        if not self.config.allowed_hosts:
+            return None
+
+        allowed_hosts: list[str] = []
+        allowed_origins: list[str] = []
+        for host in self.config.allowed_hosts:
+            base = host.split(":")[0] if ":" in host else host
+            allowed_hosts.append(host if ":" in host else f"{host}:*")
+            allowed_origins.extend([f"http://{base}:*", f"https://{base}:*"])
+
+        return TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=allowed_hosts,
+            allowed_origins=allowed_origins,
+        )
 
     def _warn_if_exposed(self, host: str) -> None:
         """Warn loudly when the HTTP transport binds a non-loopback host.
